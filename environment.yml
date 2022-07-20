@@ -1,0 +1,3 @@
+name: gliderget
+dependencies:
+    - pandas
