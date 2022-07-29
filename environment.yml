@@ -1,3 +1,8 @@
-name: gliderget
+name: deleteme
+channels:
+  - conda-forge
 dependencies:
-    - pandas
+    - argopy
+    - jupyterlab
+    - matplotlib
+    - xarray
