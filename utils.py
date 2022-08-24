@@ -1,8 +1,4 @@
-import xarray as xr
-import datetime
-import pandas as pd
 import numpy as np
-import cartopy
 from erddapy import ERDDAP
 from argopy import DataFetcher as ArgoDataFetcher
 
@@ -24,7 +20,6 @@ def find_glider_datasets(nrt_only=True):
     e = init_erddap()
 
     # Fetch dataset list
-
     e.response = "csv"
     e.dataset_id = "allDatasets"
     df_datasets = e.to_pandas()
