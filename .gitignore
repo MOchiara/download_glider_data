@@ -1,2 +1,4 @@
 .ipynb_checkpoints/
 figures
+.idea/
+__pycache__/
