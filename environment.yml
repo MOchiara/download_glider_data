@@ -1,4 +1,4 @@
-name: corsscal
+name: votoerddap
 channels:
   - conda-forge
 dependencies:
