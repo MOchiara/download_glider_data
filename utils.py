@@ -1,6 +1,8 @@
 import numpy as np
 import re
 import requests
+import pathlib
+import xarray as xr
 from erddapy import ERDDAP
 from argopy import DataFetcher as ArgoDataFetcher
 
@@ -33,23 +35,62 @@ def find_glider_datasets(nrt_only=True):
     return datasets.values
 
 
-def download_glider_dataset(dataset_ids, variables=(
-"latitude", "longitude", "salinity", "temperature", "time", "pressure", "oxygen_concentration", "chlorophyll",
-)):
+def download_glider_dataset(dataset_ids, variables=(), nrt_only=False, delayed_only=False, cache_datasets=True):
     """
     Download datasets from the VOTO server using a supplied list of dataset IDs.
-    variables: data variables to download
+    dataset_ids: list of datasetIDs present on the VOTO ERDDAP
+    variables: data variables to download. If left empty, will download all variables
     """
-    e = init_erddap()
-    # Specify variables of interest
-    e.variables = variables
+    if nrt_only and delayed_only:
+        raise ValueError("Cannot set both nrt_only and delayed_only")
+    if nrt_only:
+        ids_to_download = []
+        for name in dataset_ids:
+            if "nrt" in name:
+                ids_to_download.append(name)
+            else:
+                print(f"{name} is not nrt. Ignoring")
+    elif delayed_only:
+        ids_to_download = []
+        for name in dataset_ids:
+            if "delayed" in name:
+                ids_to_download.append(name)
+            else:
+                print(f"{name} is not delayed. Ignoring")
+    else:
+        ids_to_download = dataset_ids
 
-    # Download each dataset and swhite gloves khruangbinave as xarray
+    e = init_erddap()
+    # Specify variables of interest if supplied
+    if variables:
+        e.variables = variables
+
+    # Download each dataset as xarray
     glider_datasets = {}
-    for ds_name in dataset_ids:
-        e.dataset_id = ds_name
-        ds = e.to_xarray()
-        glider_datasets[ds_name] = ds
+    for ds_name in ids_to_download:
+        if cache_datasets and "delayed" in ds_name:
+            cache_dir = pathlib.Path('voto_erddap_data_cache')
+            if not cache_dir.exists():
+                print(f"creating directory to cache datasets at {cache_dir.absolute()}")
+                pathlib.Path('voto_erddap_data_cache').mkdir(parents=True, exist_ok=True)
+            dataset_nc = cache_dir / f"{ds_name}.nc"
+            if dataset_nc.exists():
+                print(f"Found {dataset_nc}. Loading from disk")
+                glider_datasets[ds_name] = xr.open_dataset(dataset_nc)
+            else:
+                print(f"Downloading {ds_name}")
+                e.dataset_id = ds_name
+                ds = e.to_xarray()
+                glider_datasets[ds_name] = ds
+                print(f"Writing {dataset_nc}")
+                # Hack to get around xarry error with conflicting encodings https://github.com/pydata/xarray/issues/997
+                ds.desired_heading.encoding['missing_value'] = ds.desired_heading.encoding['_FillValue'] = np.nan
+                ds.to_netcdf(dataset_nc)
+        else:
+            print(f"Downloading {ds_name}")
+            e.dataset_id = ds_name
+            ds = e.to_xarray()
+            glider_datasets[ds_name] = ds
     return glider_datasets
 
 
