@@ -237,3 +237,29 @@ def get_meta(dataset_id):
         else:
             global_attrs_clean[global_name] = global_val.strip(" ")[:-2].strip('"')
     return global_attrs_clean
+
+
+def add_profile_time(ds):
+    profile_num = ds.pressure.copy()
+    profile_num.attrs = {}
+    profile_num.name = "profile_num"
+    profile_num[:] = 0
+    start = 0
+    for i, prof_index in enumerate(ds.profile_index):
+        rowsize = ds.rowSize.values[i]
+        profile_num[start:start+rowsize] = prof_index
+        start = start + rowsize
+    ds["profile_num"] = profile_num
+    profile_time = ds.time.values.copy()
+    profile_index = ds.profile_num
+    for profile in np.unique(profile_index.values):
+        mean_time = ds.time[profile_index==profile].mean().values
+        new_times = np.empty((len(ds.time[profile_index==profile])), dtype='datetime64[ns]')
+        new_times[:] = mean_time
+        profile_time[profile_index==profile] = new_times
+    profile_time_var = ds.time.copy()
+    profile_time_var.values = profile_time
+    profile_time_var.name="profile_mean_time"
+    ds["profile_mean_time"] = profile_time_var
+    ds = ds.drop_dims("timeseries")
+    return ds
