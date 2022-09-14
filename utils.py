@@ -127,33 +127,34 @@ def smhi_profiles_in_range(station_visit_df, lon, lat, time, lon_window, lat_win
     max_lat = lat + lat_window
     min_time = time - time_window
     max_time = time + time_window
-    lon_filter = np.logical_and(station_visit_df['Sample longitude (DD)'] > min_lon, station_visit_df['Sample longitude (DD)'] < max_lon)
-    lat_filter = np.logical_and(station_visit_df['Sample latitude (DD)'] > min_lat, station_visit_df['Sample latitude (DD)'] < max_lat)
-    time_filter = np.logical_and(station_visit_df['Sampling date'] > min_time, station_visit_df['Sampling date'] < max_time)
+    lon_filter = np.logical_and(station_visit_df['sample_longitude_dd'] > min_lon, station_visit_df['sample_longitude_dd'] < max_lon)
+    lat_filter = np.logical_and(station_visit_df['sample_latitude_dd'] > min_lat, station_visit_df['sample_latitude_dd'] < max_lat)
+    time_filter = np.logical_and(station_visit_df['visit_date'] > min_time, station_visit_df['visit_date'] < max_time)
     df_in_range = station_visit_df[lon_filter & lat_filter & time_filter]
     # Filter out shallow stations
-    df_in_range = df_in_range[df_in_range['Station water depth'] > min_depth]
+    df_in_range = df_in_range[df_in_range['water_depth_m'] > min_depth]
     if df_in_range.empty:
         return None
-
-    closest_arg = np.argmin(np.abs(df_in_range['Sampling date'] - time))
+    
+    closest_arg = np.argmin(np.abs(df_in_range['visit_date'] - time))
     closest_datasetid = df_in_range.index[closest_arg]
     return closest_datasetid
 
 
-def nearest_smhi_station(df, station_visit_df, ds_glider, lat_window=0.5, lon_window=1, time_window=np.timedelta64(10, "D")):
+def nearest_smhi_station(df, ds_glider, lat_window=0.5, lon_window=1, time_window=np.timedelta64(10, "D")):
     """
     Finds the nearest SMHI station profile to a supplied glidermission. Uses sharkweb data file
     """
+    station_visit_df = df.groupby('station_visit').first()
     mean_lon = ds_glider.longitude.mean().values
     mean_lat = ds_glider.latitude.mean().values
     mean_time = ds_glider.time.mean().values
     nearest_profile = smhi_profiles_in_range(station_visit_df, mean_lon, mean_lat, mean_time, lat_window, lon_window, time_window)
     if nearest_profile:
         closest_station = station_visit_df[station_visit_df.index == nearest_profile]
-        deg_e = mean_lon - closest_station['Sample longitude (DD)'].values[0]
-        deg_n = mean_lat - closest_station['Sample latitude (DD)'].values[0]
-        time_diff = mean_time - closest_station['Sampling date'].values[0]
+        deg_e = mean_lon - closest_station['sample_longitude_dd'].values[0]
+        deg_n = mean_lat - closest_station['sample_latitude_dd'].values[0]
+        time_diff = mean_time - closest_station['visit_date'].values[0]
         east_diff, north_diff, time_diff = format_difference(deg_e, deg_n, time_diff)
         loc_str = f"Nearest station profile is {east_diff}, {north_diff} & {time_diff} than mean of glider data"
         print(loc_str)
@@ -162,6 +163,7 @@ def nearest_smhi_station(df, station_visit_df, ds_glider, lat_window=0.5, lon_wi
     else:
         print("No SMHI profiles found within tolerances")
         return None
+
 
 
 def nearest_argo_profile(ds_glider, lat_window=0.5, lon_window=1, time_window=np.timedelta64(7, "D")):
