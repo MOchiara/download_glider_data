@@ -2,3 +2,5 @@
 figures
 .idea/
 __pycache__/
+voto_erddap_data_cache
+smhi_data_cache
