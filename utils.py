@@ -84,7 +84,8 @@ def download_glider_dataset(dataset_ids, variables=(), nrt_only=False, delayed_o
                 glider_datasets[ds_name] = ds
                 print(f"Writing {dataset_nc}")
                 # Hack to get around xarry error with conflicting encodings https://github.com/pydata/xarray/issues/997
-                ds.desired_heading.encoding['missing_value'] = ds.desired_heading.encoding['_FillValue'] = np.nan
+                if "desired_heading" in ds.variables:
+                    ds.desired_heading.encoding['missing_value'] = ds.desired_heading.encoding['_FillValue'] = np.nan
                 ds.to_netcdf(dataset_nc)
         else:
             print(f"Downloading {ds_name}")
