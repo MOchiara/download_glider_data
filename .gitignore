@@ -4,3 +4,4 @@ figures
 __pycache__/
 voto_erddap_data_cache
 smhi_data_cache
+smhi_subset.csv
