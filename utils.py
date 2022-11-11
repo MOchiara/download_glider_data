@@ -81,6 +81,8 @@ def download_glider_dataset(dataset_ids, variables=(), nrt_only=False, delayed_o
                 print(f"Downloading {ds_name}")
                 e.dataset_id = ds_name
                 ds = e.to_xarray()
+                if "timeseries" in ds.dims.keys():
+                    ds = ds.drop_dims("timeseries")
                 glider_datasets[ds_name] = ds
                 print(f"Writing {dataset_nc}")
                 # Hack to get around xarry error with conflicting encodings https://github.com/pydata/xarray/issues/997
@@ -91,6 +93,8 @@ def download_glider_dataset(dataset_ids, variables=(), nrt_only=False, delayed_o
             print(f"Downloading {ds_name}")
             e.dataset_id = ds_name
             ds = e.to_xarray()
+            if "timeseries" in ds.dims.keys():
+                ds = ds.drop_dims("timeseries")
             glider_datasets[ds_name] = ds
     return glider_datasets
 
