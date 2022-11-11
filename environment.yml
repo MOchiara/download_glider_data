@@ -9,3 +9,6 @@ dependencies:
     - cartopy
     - glidertools
     - cmocean
+    - jupyterlab_widgets
+    - ipywidgets
+    - ioos_qc
