@@ -32,6 +32,10 @@ Compare glider data to nearby CTD staation occupied by the [Swedish Meteorologic
 
 A combination of the above two approaches
 
+### quality_control_flags
+
+Eaplains the by-variables quality control flags supplied as part of the dataset. This notebook covers how to apply the existing flags, and how to produce new flags using the IOOS QARTOD toolbox with user-defined threshold values.
+
 ------------------------------
 
 
