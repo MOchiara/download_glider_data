@@ -3,6 +3,7 @@ import re
 import requests
 import pathlib
 import xarray as xr
+import pandas as pd
 from erddapy import ERDDAP
 from argopy import DataFetcher as ArgoDataFetcher
 
@@ -198,49 +199,27 @@ def nearest_argo_profile(ds_glider, lat_window=0.5, lon_window=1, time_window=np
         return None
     
     
-def clean_dict(dict_str):
-    """"Clean up a dictionary string from a .das metadata file and return it as a dictionary
-    """
-    clean_str = re.sub(r"'", ' ', dict_str).strip(" ")[2:-4]
-    pairs = clean_str.split(",")
-    clean_dict = {}
-    for pair in pairs:
-        key, *val = pair.split(":")
-        key = key.strip(" ")
-        try:
-            val = val[0].strip(" ")
-        except:
-            val = val
-        clean_dict[key] = val
-    return clean_dict
-
-
 def get_meta(dataset_id):
-    """
-    Fetches metadata for a given dataset on the VOTO ERDDAP, returning it as a dictionary
-    variables:
-    dataset_id: string corresponding to a datasetID on the VOTO ERDDAP e.g. "nrt_SEA068_M27"
-    """
-    dds_url = f"https://erddap.observations.voiceoftheocean.org/erddap/tabledap/{dataset_id}.das"
-    response = requests.get(dds_url).text
-    nc_vars, nc_globals = response.split("NC_GLOBAL")
-    variables = []
-    for nc_var_rough in nc_vars[17:].split("}"):
-        var_name = nc_var_rough[3:].split("{")[0].strip(" ")
-        variables.append(var_name)
-    global_attrs_list = nc_globals.split("String")[1:]
-    global_attrs = {}
-    for item in global_attrs_list:
-        _, name, *val = item.split(" ")
-        val = " ".join(val)
-        global_attrs[name] = val
-    global_attrs_clean = {"variables": variables}
-    for global_name, global_val in global_attrs.items():
-        if "{" in global_val:
-            global_attrs_clean[global_name] = clean_dict(global_val)
-        else:
-            global_attrs_clean[global_name] = global_val.strip(" ")[:-2].strip('"')
-    return global_attrs_clean
+    erddap_url = "https://erddap.observations.voiceoftheocean.org/erddap/tabledap"
+    dataset_url = f"{erddap_url}/{dataset_id}"
+    time_url = f"{dataset_url}.csvp?time"
+    time_arr = pd.read_csv(time_url).values
+    late_time = time_arr[-50][0]
+
+    e = init_erddap()
+    e.dataset_id = dataset_id
+    e.constraints = {"time>=": str(late_time)}
+    ds = e.to_xarray()
+    attrs = ds.attrs
+    # Clean up formatting of variables list
+    if "\n" in attrs["variables"]:
+        attrs["variables"] = attrs["variables"].split("\n")
+    # evaluate dictionaries
+    for key, val in attrs.items():
+        if type(val)==str:
+            if "{" in val:
+                attrs[key] = eval(val)
+    return attrs
 
 
 def add_profile_time(ds):
