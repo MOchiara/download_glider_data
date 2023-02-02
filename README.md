@@ -1,5 +1,7 @@
 # VOTO data download tutorials
 
+**Notice** this repo is being deprecated in favour of [ERDDAP demo](https://github.com/voto-ocean-knowledge/erddap_demo)
+
 These notebooks provide a starting point for researches wishing to explore and use VOTO glider data made available on our ERDDAP server.
 
 Try it out on Binder: [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/voto-ocean-knowledge/download_glider_data/HEAD?)
