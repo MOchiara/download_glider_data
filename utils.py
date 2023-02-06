@@ -1,20 +1,30 @@
+import datetime
 import numpy as np
-import re
-import requests
 import pathlib
 import xarray as xr
 import pandas as pd
 from erddapy import ERDDAP
+from tqdm.notebook import tqdm
 from argopy import DataFetcher as ArgoDataFetcher
 
+cache_dir = pathlib.Path('voto_erddap_data_cache')
 
-def init_erddap():
+
+def init_erddap(protocol="tabledap"):
     # Setup initial ERDDAP connection
     e = ERDDAP(
         server="https://erddap.observations.voiceoftheocean.org/erddap",
-        protocol="tabledap",
+        protocol=protocol,
     )
     return e
+
+
+def _clean_dims(ds):
+    if "timeseries" in ds.dims.keys() and "obs" in ds.dims.keys():
+        ds = ds.drop_dims("timeseries")
+    if "obs" in list(ds.dims):
+        ds = ds.swap_dims({"obs": "time"})
+    return ds
 
 
 def find_glider_datasets(nrt_only=True):
@@ -36,7 +46,162 @@ def find_glider_datasets(nrt_only=True):
     return datasets.values
 
 
-def download_glider_dataset(dataset_ids, variables=(), nrt_only=False, delayed_only=False, cache_datasets=True):
+def get_meta(dataset_id, protocol="tabledap"):
+    if "adcp" in dataset_id:
+        protocol = "griddap"
+    erddap_url = f"https://erddap.observations.voiceoftheocean.org/erddap/{protocol}"
+    e = init_erddap(protocol=protocol)
+    e.dataset_id = dataset_id
+    if protocol == "tabledap":
+        dataset_url = f"{erddap_url}/{dataset_id}"
+        time_url = f"{dataset_url}.csvp?time"
+        time_arr = pd.read_csv(time_url).values
+        late_time = time_arr[-50][0]
+        e.constraints = {"time>=": str(late_time)}
+    else:
+        e.griddap_initialize()
+        time = pd.read_csv(f"https://erddap.observations.voiceoftheocean.org/erddap/griddap/{dataset_id}.csvp?time")[
+            "time (UTC)"].values
+        e.constraints['time>='] = str(time[-20])
+    ds = e.to_xarray()
+    attrs = ds.attrs
+    # Clean up formatting of variables list
+    if "variables" in attrs.keys():
+        if "\n" in attrs["variables"]:
+            attrs["variables"] = attrs["variables"].split("\n")
+    # evaluate dictionaries
+    for key, val in attrs.items():
+        if type(val) == str:
+            if "{" in val:
+                attrs[key] = eval(val)
+    return attrs
+
+
+def add_profile_time(ds):
+    profile_num = ds.pressure.copy()
+    profile_num.attrs = {}
+    profile_num.name = "profile_num"
+    profile_num[:] = 0
+    start = 0
+    for i, prof_index in enumerate(ds.profile_index):
+        rowsize = ds.rowSize.values[i]
+        profile_num[start:start + rowsize] = prof_index
+        start = start + rowsize
+    ds["profile_num"] = profile_num
+    profile_time = ds.time.values.copy()
+    profile_index = ds.profile_num
+    for profile in np.unique(profile_index.values):
+        mean_time = ds.time[profile_index == profile].mean().values
+        new_times = np.empty((len(ds.time[profile_index == profile])), dtype='datetime64[ns]')
+        new_times[:] = mean_time
+        profile_time[profile_index == profile] = new_times
+    profile_time_var = ds.time.copy()
+    profile_time_var.values = profile_time
+    profile_time_var.name = "profile_mean_time"
+    ds["profile_mean_time"] = profile_time_var
+    ds = _clean_dims(ds)
+    return ds
+
+
+def _cached_dataset_exists(ds_id, request):
+    """
+    Returns True if all the following conditions are met:
+    1. A dataset corresponding to ds_id exists in the cache
+    2. The cached dataset was downloaded with the same request
+    3. The dataset has not been updated on the VOTO ERDDAP since it was last downloaded
+    Otherwise, returns False
+    """
+    if not cache_dir.exists():
+        print(f"Creating directory to cache datasets at {cache_dir.absolute()}")
+        pathlib.Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        return False
+    dataset_nc = cache_dir / f"{ds_id}.nc"
+    if not dataset_nc.exists():
+        print(f"Dataset {ds_id} not found in cache")
+        return False
+    try:
+        df = pd.read_csv(cache_dir / "cache_info.csv", index_col=0)
+    except:
+        print(f"no cache records file found")
+        return False
+
+    if ds_id in df.index:
+        stats = df.loc[ds_id]
+    else:
+        print(f"no cache record found for {ds_id}")
+        return False
+    if not stats["request"] == request:
+        print(f"request has changed for {ds_id}")
+        return False
+
+    nc_time = pd.to_datetime(stats["date_created"])
+    meta = get_meta(ds_id)
+    erddap_time = pd.to_datetime(meta["date_created"])
+    if nc_time < erddap_time - datetime.timedelta(seconds=60):
+        print(f"Dataset {ds_id} has been updated on ERDDAP")
+        return False
+    
+    return True
+
+
+def _update_stats(ds_id, request):
+    """
+    Update the stats for a specified dataset
+    """
+    dataset_nc = cache_dir / f"{ds_id}.nc"
+    ds = xr.open_dataset(dataset_nc)
+    try:
+        df = pd.read_csv(cache_dir / "cache_info.csv", index_col=0)
+    except:
+        df = pd.DataFrame()
+
+    nc_time = ds.attrs["date_created"]
+    new_stats = {"request": request, "date_created": pd.to_datetime(nc_time)}
+    if ds_id in df.index:
+        df.loc[ds_id] = new_stats
+    else:
+        new_row = pd.DataFrame(new_stats, index=[ds_id])
+        df = pd.concat((df, new_row))
+    df = df.sort_index()
+    df.to_csv(cache_dir / "cache_info.csv")
+    ds.close()
+
+
+def add_adcp_data(ds):
+    dataset_id = ds.attrs["dataset_id"]
+    parts = dataset_id.split("_")
+    adcp_id = f"adcp_{parts[1]}_{parts[2]}"
+    cached_ds = _cached_dataset_exists(adcp_id, "adcp")
+    dataset_nc = cache_dir / f"{adcp_id}.nc"
+    if cached_ds:
+        print(f"Found {dataset_nc}. Loading from disk")
+        adcp = xr.open_dataset(dataset_nc)
+    else:
+        print(f"Downloading {adcp_id}")
+        e = ERDDAP(server="https://erddap.observations.voiceoftheocean.org/erddap/", protocol="griddap", )
+        e.dataset_id = adcp_id
+        e.griddap_initialize()
+        time = pd.read_csv(f"https://erddap.observations.voiceoftheocean.org/erddap/griddap/{adcp_id}.csvp?time")[
+            "time (UTC)"].values
+        e.constraints['time>='] = str(time[0])
+        adcp = e.to_xarray()
+        adcp.to_netcdf(dataset_nc)
+        _update_stats(adcp_id, "adcp")
+    ds = _clean_dims(ds)
+
+    if parts[0] == "nrt":
+        print("WARNING: matching adcp data to nearest nrt timestamp. Potential missmatch of ~ 15 seconds. "
+              "Use delayed mode data for closer timestamp match")
+        adcp = adcp.reindex(time=ds.time, method="nearest")
+    for var_name in list(adcp):
+        ds[f"adcp_{var_name}"] = adcp[var_name]
+    adcp_attrs_dict = {i: j for i, j in adcp.attrs.items() if i not in ds.attrs}
+    ds.attrs["adcp_attributes"] = str(adcp_attrs_dict)
+    return ds
+
+
+def download_glider_dataset(dataset_ids, variables=(), constraints={}, nrt_only=False, delayed_only=False,
+                            cache_datasets=True, adcp=False):
     """
     Download datasets from the VOTO server using a supplied list of dataset IDs.
     dataset_ids: list of datasetIDs present on the VOTO ERDDAP
@@ -65,34 +230,48 @@ def download_glider_dataset(dataset_ids, variables=(), nrt_only=False, delayed_o
     # Specify variables of interest if supplied
     if variables:
         e.variables = variables
+    if constraints:
+        e.constraints = constraints
 
     # Download each dataset as xarray
     glider_datasets = {}
-    for ds_name in ids_to_download:
+    for ds_name in tqdm(ids_to_download):
         if cache_datasets and "delayed" in ds_name:
-            cache_dir = pathlib.Path('voto_erddap_data_cache')
-            if not cache_dir.exists():
-                print(f"creating directory to cache datasets at {cache_dir.absolute()}")
-                pathlib.Path('voto_erddap_data_cache').mkdir(parents=True, exist_ok=True)
+            e.dataset_id = ds_name
+            request = e.get_download_url()
+            cached_dataset = _cached_dataset_exists(ds_name, request)
             dataset_nc = cache_dir / f"{ds_name}.nc"
-            if dataset_nc.exists():
-                print(f"Found {dataset_nc}. Loading from disk")
-                glider_datasets[ds_name] = xr.open_dataset(dataset_nc)
+            if cached_dataset:
+                print(f"Found {ds_name} in {cache_dir}. Loading from disk")
+                ds = xr.open_dataset(dataset_nc)
+                if adcp:
+                    ds = add_adcp_data(ds)
+                glider_datasets[ds_name] = ds
             else:
                 print(f"Downloading {ds_name}")
-                e.dataset_id = ds_name
-                ds = e.to_xarray()
-                if "timeseries" in ds.dims.keys() and "obs" in ds.dims.keys():
-                    ds = ds.drop_dims("timeseries")
-                glider_datasets[ds_name] = ds
+                try:
+                    ds = e.to_xarray()
+                except:
+                    print(f"No matching data for {ds_name}")
+                    continue
+                ds = _clean_dims(ds)
                 print(f"Writing {dataset_nc}")
                 ds.to_netcdf(dataset_nc)
+                if adcp:
+                    ds = add_adcp_data(ds)
+                glider_datasets[ds_name] = ds
+                _update_stats(ds_name, request)
         else:
             print(f"Downloading {ds_name}")
             e.dataset_id = ds_name
-            ds = e.to_xarray()
-            if "timeseries" in ds.dims.keys() and "obs" in ds.dims.keys():
-                ds = ds.drop_dims("timeseries")
+            try:
+                ds = e.to_xarray()
+            except:
+                print(f"No matching data for {ds_name}")
+                continue
+            ds = _clean_dims(ds)
+            if adcp:
+                ds = add_adcp_data(ds)
             glider_datasets[ds_name] = ds
     return glider_datasets
 
@@ -129,15 +308,17 @@ def smhi_profiles_in_range(station_visit_df, lon, lat, time, lon_window, lat_win
     max_lat = lat + lat_window
     min_time = time - time_window
     max_time = time + time_window
-    lon_filter = np.logical_and(station_visit_df['sample_longitude_dd'] > min_lon, station_visit_df['sample_longitude_dd'] < max_lon)
-    lat_filter = np.logical_and(station_visit_df['sample_latitude_dd'] > min_lat, station_visit_df['sample_latitude_dd'] < max_lat)
+    lon_filter = np.logical_and(station_visit_df['sample_longitude_dd'] > min_lon,
+                                station_visit_df['sample_longitude_dd'] < max_lon)
+    lat_filter = np.logical_and(station_visit_df['sample_latitude_dd'] > min_lat,
+                                station_visit_df['sample_latitude_dd'] < max_lat)
     time_filter = np.logical_and(station_visit_df['visit_date'] > min_time, station_visit_df['visit_date'] < max_time)
     df_in_range = station_visit_df[lon_filter & lat_filter & time_filter]
     # Filter out shallow stations
     df_in_range = df_in_range[df_in_range['water_depth_m'] > min_depth]
     if df_in_range.empty:
         return None
-    
+
     closest_arg = np.argmin(np.abs(df_in_range['visit_date'] - time))
     closest_datasetid = df_in_range.index[closest_arg]
     return closest_datasetid
@@ -151,7 +332,8 @@ def nearest_smhi_station(df, ds_glider, lat_window=0.5, lon_window=1, time_windo
     mean_lon = ds_glider.longitude.mean().values
     mean_lat = ds_glider.latitude.mean().values
     mean_time = ds_glider.time.mean().values
-    nearest_profile = smhi_profiles_in_range(station_visit_df, mean_lon, mean_lat, mean_time, lat_window, lon_window, time_window)
+    nearest_profile = smhi_profiles_in_range(station_visit_df, mean_lon, mean_lat, mean_time, lat_window, lon_window,
+                                             time_window)
     if nearest_profile:
         closest_station = station_visit_df[station_visit_df.index == nearest_profile]
         deg_e = mean_lon - closest_station['sample_longitude_dd'].values[0]
@@ -165,7 +347,6 @@ def nearest_smhi_station(df, ds_glider, lat_window=0.5, lon_window=1, time_windo
     else:
         print("No SMHI profiles found within tolerances")
         return None
-
 
 
 def nearest_argo_profile(ds_glider, lat_window=0.5, lon_window=1, time_window=np.timedelta64(7, "D")):
@@ -197,52 +378,3 @@ def nearest_argo_profile(ds_glider, lat_window=0.5, lon_window=1, time_window=np
     except:
         print("No floats found within tolerances")
         return None
-    
-    
-def get_meta(dataset_id):
-    erddap_url = "https://erddap.observations.voiceoftheocean.org/erddap/tabledap"
-    dataset_url = f"{erddap_url}/{dataset_id}"
-    time_url = f"{dataset_url}.csvp?time"
-    time_arr = pd.read_csv(time_url).values
-    late_time = time_arr[-50][0]
-
-    e = init_erddap()
-    e.dataset_id = dataset_id
-    e.constraints = {"time>=": str(late_time)}
-    ds = e.to_xarray()
-    attrs = ds.attrs
-    # Clean up formatting of variables list
-    if "\n" in attrs["variables"]:
-        attrs["variables"] = attrs["variables"].split("\n")
-    # evaluate dictionaries
-    for key, val in attrs.items():
-        if type(val)==str:
-            if "{" in val:
-                attrs[key] = eval(val)
-    return attrs
-
-
-def add_profile_time(ds):
-    profile_num = ds.pressure.copy()
-    profile_num.attrs = {}
-    profile_num.name = "profile_num"
-    profile_num[:] = 0
-    start = 0
-    for i, prof_index in enumerate(ds.profile_index):
-        rowsize = ds.rowSize.values[i]
-        profile_num[start:start+rowsize] = prof_index
-        start = start + rowsize
-    ds["profile_num"] = profile_num
-    profile_time = ds.time.values.copy()
-    profile_index = ds.profile_num
-    for profile in np.unique(profile_index.values):
-        mean_time = ds.time[profile_index==profile].mean().values
-        new_times = np.empty((len(ds.time[profile_index==profile])), dtype='datetime64[ns]')
-        new_times[:] = mean_time
-        profile_time[profile_index==profile] = new_times
-    profile_time_var = ds.time.copy()
-    profile_time_var.values = profile_time
-    profile_time_var.name="profile_mean_time"
-    ds["profile_mean_time"] = profile_time_var
-    ds = ds.drop_dims("timeseries")
-    return ds
