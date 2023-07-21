@@ -140,7 +140,7 @@ def _cached_dataset_exists(ds_id, request):
     if nc_time < erddap_time - datetime.timedelta(seconds=60):
         print(f"Dataset {ds_id} has been updated on ERDDAP")
         return False
-    
+
     return True
 
 
@@ -251,8 +251,8 @@ def download_glider_dataset(dataset_ids, variables=(), constraints={}, nrt_only=
                 print(f"Downloading {ds_name}")
                 try:
                     ds = e.to_xarray()
-                except:
-                    print(f"No matching data for {ds_name}")
+                except BaseException as ex:
+                    print(ex)
                     continue
                 ds = _clean_dims(ds)
                 print(f"Writing {dataset_nc}")
@@ -266,8 +266,8 @@ def download_glider_dataset(dataset_ids, variables=(), constraints={}, nrt_only=
             e.dataset_id = ds_name
             try:
                 ds = e.to_xarray()
-            except:
-                print(f"No matching data for {ds_name}")
+            except BaseException as ex:
+                print(ex)
                 continue
             ds = _clean_dims(ds)
             if adcp:
